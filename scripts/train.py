@@ -1,95 +1,261 @@
-from transformers import AutoModelForSequenceClassification, Trainer, TrainingArguments, AutoTokenizer
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from datasets import load_from_disk
-import random
-import logging
-import sys
-import argparse
 import os
+import argparse
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    set_seed,
+    default_data_collator,
+#    BitsAndBytesConfig,
+    Trainer,
+    TrainingArguments,
+)
+from datasets import load_from_disk
 import torch
 
-if __name__ == "__main__":
+#import bitsandbytes as bnb
+#from huggingface_hub import login, HfFolder
 
+
+def parse_arge():
+    """Parse the arguments."""
     parser = argparse.ArgumentParser()
-
-    # hyperparameters sent by the client are passed as command-line arguments to the script.
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--train_batch_size", type=int, default=32)
-    parser.add_argument("--eval_batch_size", type=int, default=64)
-    parser.add_argument("--warmup_steps", type=int, default=500)
-    parser.add_argument("--model_name", type=str)
-    parser.add_argument("--learning_rate", type=str, default=5e-5)
-
-    # Data, model, and output directories
-    parser.add_argument("--output_data_dir", type=str, default=os.environ["SM_OUTPUT_DATA_DIR"])
-    parser.add_argument("--model_dir", type=str, default=os.environ["SM_MODEL_DIR"])
-    parser.add_argument("--n_gpus", type=str, default=os.environ["SM_NUM_GPUS"])
-    parser.add_argument("--training_dir", type=str, default=os.environ["SM_CHANNEL_TRAIN"])
-    parser.add_argument("--test_dir", type=str, default=os.environ["SM_CHANNEL_TEST"])
-
+    # add model id and dataset path argument
+    parser.add_argument(
+        "--model_id",
+        type=str,
+        help="Model id to use for training.",
+    )
+    parser.add_argument(
+        "--dataset_path", type=str, default="lm_dataset", help="Path to dataset."
+    )
+    # parser.add_argument(
+    #     "--hf_token", type=str, default=HfFolder.get_token(), help="Path to dataset."
+    # )
+    # add training hyperparameters for epochs, batch size, learning rate, and seed
+    parser.add_argument(
+        "--epochs", type=int, default=3, help="Number of epochs to train for."
+    )
+    parser.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=1,
+        help="Batch size to use for training.",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=5e-5, help="Learning rate to use for training."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Seed to use for training."
+    )
+    parser.add_argument(
+        "--gradient_checkpointing",
+        type=bool,
+        default=True,
+        help="Path to deepspeed config file.",
+    )
+    parser.add_argument(
+        "--bf16",
+        type=bool,
+        default=True if torch.cuda.get_device_capability()[0] == 8 else False,
+        help="Whether to use bf16.",
+    )
+    # parser.add_argument(
+    #     "--merge_weights",
+    #     type=bool,
+    #     default=True,
+    #     help="Whether to merge LoRA weights with base model.",
+    # )
     args, _ = parser.parse_known_args()
 
-    # Set up logging
-    logger = logging.getLogger(__name__)
+    # if args.hf_token:
+    #     print(f"Logging into the Hugging Face Hub with token {args.hf_token[:10]}...")
+    #     login(token=args.hf_token)
 
-    logging.basicConfig(
-        level=logging.getLevelName("INFO"),
-        handlers=[logging.StreamHandler(sys.stdout)],
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    return args
+
+
+# # COPIED FROM https://github.com/artidoro/qlora/blob/main/qlora.py
+# def print_trainable_parameters(model, use_4bit=False):
+#     """
+#     Prints the number of trainable parameters in the model.
+#     """
+#     trainable_params = 0
+#     all_param = 0
+#     for _, param in model.named_parameters():
+#         num_params = param.numel()
+#         # if using DS Zero 3 and the weights are initialized empty
+#         if num_params == 0 and hasattr(param, "ds_numel"):
+#             num_params = param.ds_numel
+
+#         all_param += num_params
+#         if param.requires_grad:
+#             trainable_params += num_params
+#     # if use_4bit:
+#     #     trainable_params /= 2
+#     print(
+#         f"all params: {all_param:,d} || trainable params: {trainable_params:,d} || trainable%: {100 * trainable_params / all_param}"
+#     )
+
+
+# COPIED FROM https://github.com/artidoro/qlora/blob/main/qlora.py
+# def find_all_linear_names(model):
+#     lora_module_names = set()
+# #    for name, module in model.named_modules():
+#         # if isinstance(module, bnb.nn.Linear4bit):
+#         #     names = name.split(".")
+#         #     lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+
+#     if "lm_head" in lora_module_names:  # needed for 16-bit
+#         lora_module_names.remove("lm_head")
+#     return list(lora_module_names)
+
+
+# def create_peft_model(model, gradient_checkpointing=True, bf16=True):
+#     from peft import (
+#         get_peft_model,
+#         LoraConfig,
+#         TaskType,
+# #        prepare_model_for_kbit_training,
+#     )
+#     from peft.tuners.lora import LoraLayer
+
+#     # # prepare int-4 model for training
+#     # model = prepare_model_for_kbit_training(
+#     #     model, use_gradient_checkpointing=gradient_checkpointing
+#     # )
+#     if gradient_checkpointing:
+#         model.gradient_checkpointing_enable()
+
+#     # get lora target modules
+#     # modules = find_all_linear_names(model)
+
+# #     #If only targeting attention blocks of the model
+# #     modules = ["q_proj", "v_proj"]
+
+# #     #If targeting all linear layers
+# #     #target_modules = ['q_proj','k_proj','v_proj','o_proj','gate_proj','down_proj','up_proj','lm_head']
+    
+# #     print(f"Found {len(modules)} modules to quantize: {modules}")
+
+#     # peft_config = LoraConfig(
+#     #     r=64,
+#     #     lora_alpha=16,
+#     #     target_modules=modules,
+#     #     lora_dropout=0.1,
+#     #     bias="none",
+#     #     task_type=TaskType.CAUSAL_LM,
+#     # )
+
+# #     model = get_peft_model(model, peft_config)
+
+# #     # pre-process the model by upcasting the layer norms in float 32 for
+# #     for name, module in model.named_modules():
+# #         if isinstance(module, LoraLayer):
+# #             if bf16:
+# #                 module = module.to(torch.bfloat16)
+# #         if "norm" in name:
+# #             module = module.to(torch.float32)
+# #         if "lm_head" in name or "embed_tokens" in name:
+# #             if hasattr(module, "weight"):
+# #                 if bf16 and module.weight.dtype == torch.float32:
+# #                     module = module.to(torch.bfloat16)
+
+# #     model.print_trainable_parameters()
+
+#     return model
+
+
+def training_function(args):
+    # set seed
+    set_seed(args.seed)
+
+    dataset = load_from_disk(args.dataset_path)
+    # load model from the hub with a bnb config
+    # bnb_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_use_double_quant=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.bfloat16,
+    # )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_id,
+        use_cache=False
+        if args.gradient_checkpointing
+        else True,  # this is needed for gradient checkpointing
+        device_map="auto",
+#        quantization_config=bnb_config,
     )
 
-    # load datasets
-    train_dataset = load_from_disk(args.training_dir)
-    test_dataset = load_from_disk(args.test_dir)
+#     # create peft config
+#     model = create_peft_model(
+#         model, gradient_checkpointing=args.gradient_checkpointing, bf16=args.bf16
+#     )
 
-    logger.info(f" loaded train_dataset length is: {len(train_dataset)}")
-    logger.info(f" loaded test_dataset length is: {len(test_dataset)}")
-
-    # compute metrics function for binary classification
-    def compute_metrics(pred):
-        labels = pred.label_ids
-        preds = pred.predictions.argmax(-1)
-        precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="binary")
-        acc = accuracy_score(labels, preds)
-        return {"accuracy": acc, "f1": f1, "precision": precision, "recall": recall}
-
-    # download model from model hub
-    model = AutoModelForSequenceClassification.from_pretrained(args.model_name)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-
-    # define training args
+    # Define training args
+    output_dir = "./tmp/llama2"
     training_args = TrainingArguments(
-        output_dir=args.model_dir,
+        output_dir=output_dir,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        bf16=args.bf16,  # Use BF16 if available
+        learning_rate=args.lr,
         num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.train_batch_size,
-        per_device_eval_batch_size=args.eval_batch_size,
-        warmup_steps=args.warmup_steps,
-        evaluation_strategy="epoch",
-        logging_dir=f"{args.output_data_dir}/logs",
-        learning_rate=float(args.learning_rate),
+        gradient_checkpointing=args.gradient_checkpointing,
+        # logging strategies
+        logging_dir=f"{output_dir}/logs",
+        logging_strategy="steps",
+        logging_steps=10,
+        save_strategy="no",
     )
 
-    # create Trainer instance
+    # Create Trainer instance
     trainer = Trainer(
         model=model,
         args=training_args,
-        compute_metrics=compute_metrics,
-        train_dataset=train_dataset,
-        eval_dataset=test_dataset,
-        tokenizer=tokenizer,
+        train_dataset=dataset,
+        data_collator=default_data_collator,
     )
 
-    # train model
+    # Start training
     trainer.train()
 
-    # evaluate model
-    eval_result = trainer.evaluate(eval_dataset=test_dataset)
+    sagemaker_save_dir="/opt/ml/model/"
+#     if args.merge_weights:
+#         # merge adapter weights with base model and save
+#         # save int 4 model
+#         trainer.model.save_pretrained(output_dir, safe_serialization=False)
+#         # clear memory
+#         del model
+#         del trainer
+#         torch.cuda.empty_cache()
 
-    # writes eval result to file which can be accessed later in s3 ouput
-    with open(os.path.join(args.output_data_dir, "eval_results.txt"), "w") as writer:
-        print(f"***** Eval results *****")
-        for key, value in sorted(eval_result.items()):
-            writer.write(f"{key} = {value}\n")
+#         from peft import AutoPeftModelForCausalLM
 
-    # Saves the model to s3
-    trainer.save_model(args.model_dir)
+#         # load PEFT model in fp16
+#         model = AutoPeftModelForCausalLM.from_pretrained(
+#             output_dir,
+#             low_cpu_mem_usage=True,
+#             torch_dtype=torch.bfloat16,
+#         )  
+#         # Merge LoRA and base model and save
+#         model = model.merge_and_unload()        
+#         model.save_pretrained(
+#             sagemaker_save_dir, safe_serialization=True, max_shard_size="2GB"
+#         )
+    # else:
+    trainer.model.save_pretrained(
+        sagemaker_save_dir, safe_serialization=True
+    )
+
+    # save tokenizer for easy inference
+    tokenizer = AutoTokenizer.from_pretrained(args.model_id)
+    tokenizer.save_pretrained(sagemaker_save_dir)
+
+
+def main():
+    args = parse_arge()
+    training_function(args)
+
+
+if __name__ == "__main__":
+    main()
