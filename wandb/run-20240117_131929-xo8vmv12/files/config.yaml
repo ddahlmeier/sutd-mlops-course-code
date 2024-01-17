@@ -40,6 +40,7 @@ _wandb:
       - 53
       - 55
       3:
+      - 2
       - 13
       - 16
       - 23
@@ -48,4 +49,12 @@ _wandb:
       8:
       - 1
       - 5
+      10:
+      - 5
       13: linux-x86_64
+    viz:
+      precision_recall:
+        id: wandb/pr_curve/v1
+        historyFieldSettings:
+          x-axis: _step
+          key: precision_recall
