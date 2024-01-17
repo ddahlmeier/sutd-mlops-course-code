@@ -1,2 +1,2 @@
-# sutd-mlops-course-code
-Code materials for the SUTD MLOps course
+# 50.055 Machine Learning Operations
+This repo contains code materials for the SUTD MLOps course
