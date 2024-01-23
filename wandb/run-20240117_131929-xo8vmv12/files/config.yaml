@@ -1,0 +1,60 @@
+wandb_version: 1
+
+learning_rate:
+  desc: null
+  value: 0.01
+loss:
+  desc: null
+  value: log_loss
+penalty:
+  desc: null
+  value: l2
+architecture:
+  desc: null
+  value: SGDClassifier
+dataset_name:
+  desc: null
+  value: rotten_tomatoes
+_wandb:
+  desc: null
+  value:
+    python_version: 3.10.13
+    cli_version: 0.15.12
+    framework: sklearn
+    is_jupyter_run: true
+    is_kaggle_kernel: false
+    start_time: 1705497575.353725
+    t:
+      1:
+      - 5
+      - 15
+      - 49
+      - 51
+      - 53
+      - 55
+      2:
+      - 5
+      - 15
+      - 49
+      - 51
+      - 53
+      - 55
+      3:
+      - 2
+      - 13
+      - 16
+      - 23
+      4: 3.10.13
+      5: 0.15.12
+      8:
+      - 1
+      - 5
+      10:
+      - 5
+      13: linux-x86_64
+    viz:
+      precision_recall:
+        id: wandb/pr_curve/v1
+        historyFieldSettings:
+          x-axis: _step
+          key: precision_recall
